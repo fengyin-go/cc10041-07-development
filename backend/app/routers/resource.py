@@ -10,6 +10,8 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services import service_for
+from app.services.errors import BusinessRuleError
+from app.trusted import trusted_context_from_request
 
 router = APIRouter(prefix="/api", tags=["业务资源"])
 
@@ -83,16 +85,27 @@ def get_entry(module: str, entry_id: int) -> dict[str, Any]:
 
 
 @router.post("/{module}", response_model=ActionResult)
-def create_entry(module: str, payload: EntryPayload) -> ActionResult:
+def create_entry(module: str, payload: EntryPayload, request: Request) -> ActionResult:
     service = require_service(module)
-    entry, missing = service.create_entry(payload.values)
+    # 登记时的归属身份只从可信调用上下文取，不采信请求体里的表名/业务域。
+    try:
+        entry, missing = service.create_entry(
+            payload.values, trusted_context_from_request(request))
+    except BusinessRuleError as error:
+        return ActionResult(ok=False, message=str(error))
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
     return ActionResult(ok=True, message=f"{service.ENTITY}已登记", entry=entry)
 
 
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)
-def run_action(module: str, entry_id: int, payload: ActionPayload) -> ActionResult:
+def run_action(
+    module: str, entry_id: int, payload: ActionPayload, request: Request
+) -> ActionResult:
     service = require_service(module)
-    entry, message = service.run_action(entry_id, payload.action.strip())
+    try:
+        entry, message = service.run_action(
+            entry_id, payload.action.strip(), trusted_context_from_request(request))
+    except BusinessRuleError as error:
+        return ActionResult(ok=False, message=str(error), entry=service.get_entry(entry_id))
     return ActionResult(ok=entry is not None, message=message, entry=entry)

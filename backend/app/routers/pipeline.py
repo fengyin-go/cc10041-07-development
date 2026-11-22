@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.engine import StreamPipeline, BatchPipelineEngine, PipelineMonitorEngine, DataQualityEngine
+from app.trusted import trusted_context_from_request
 
 router = APIRouter(prefix="/api/pipeline", tags=["数据处理管道"])
 
@@ -68,12 +69,16 @@ def create_iceberg_snapshot(table_name: str = Query(...)) -> dict[str, Any]:
 
 @router.post("/quality/sample")
 def execute_sampling(
+    request: Request,
     target_table: str = Query(...),
     sample_ratio: float = Query(default=0.1, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
-    """执行数据采样。"""
+    """执行数据采样；表名进入归属清单后必须带该业务域的可信身份。"""
     engine = DataQualityEngine()
-    return engine.execute_sampling(target_table=target_table, sample_ratio=sample_ratio)
+    context = trusted_context_from_request(request)
+    return engine.execute_sampling(
+        target_table=target_table, sample_ratio=sample_ratio, context=context
+    )
 
 
 @router.get("/quality/health")

@@ -85,8 +85,65 @@ class DataQualityEngine:
             "partition_definition": tbl.get("分区定义", ""),
         }
 
-    def execute_sampling(self, *, target_table: str, sample_ratio: float = 0.1) -> dict[str, Any]:
-        """执行数据采样。"""
+    def execute_sampling(
+        self,
+        *,
+        target_table: str,
+        sample_ratio: float = 0.1,
+        context: Any | None = None,
+    ) -> dict[str, Any]:
+        """执行数据采样。
+
+        表名进入归属清单后就不再是读取凭据：必须带该业务域的可信身份，
+        且只在该域归属已确认时返回范围，绝不把他域分区计入。
+        """
+        from app.sampling import APPROVED, CONFIRMED, ledger
+        from app.trusted import canonical_domain
+
+        claims = ledger().claims_for(table=target_table)
+        if claims:
+            domain = canonical_domain(getattr(context, "domain", None))
+            usable = bool(getattr(context, "usable", False))
+            if not usable:
+                return {
+                    "sampled": False,
+                    "reason": "缺少可信调用上下文，无法确定业务域归属",
+                    "basis": {"table": target_table, "claims": [
+                        {"domain": c.domain, "ownership_status": c.status}
+                        for c in claims
+                    ]},
+                }
+            own = [c for c in claims if c.domain == domain]
+            if not own:
+                # 同名表在别的域存在，但名字本身不授权读取
+                return {
+                    "sampled": False,
+                    "reason": f"可信域 {domain} 没有表 {target_table} 的归属登记",
+                    "basis": {"table": target_table, "domain": domain},
+                }
+            confirmed = [c for c in own if c.status == CONFIRMED]
+            if not confirmed:
+                return {
+                    "sampled": False,
+                    "reason": f"{domain}域 {target_table} 的归属尚未确认",
+                    "basis": {"table": target_table, "domain": domain},
+                }
+            approved = [
+                part for claim in confirmed for part in claim.partitions
+                if part.status == APPROVED
+            ]
+            return {
+                "sampled": bool(approved),
+                "reason": "按归属清单返回可读取分区" if approved else "没有已核准的分区",
+                "target_table": target_table,
+                "domain": domain,
+                "sample_ratio": sample_ratio,
+                "approved_partitions": len(approved),
+                "partition_names": [part.name for part in approved],
+                "manifest_version": ledger().manifest_version,
+                "sampled_at": int(time.time() * 1000),
+            }
+
         configs = store.rows(self.sample_key)
         active = [c for c in configs if c.get("status") == "待执行"]
         if not active:

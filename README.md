@@ -79,5 +79,39 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 采样归属
+
+Iceberg 表登记时按「表名 + 所属业务域」写入采样归属清单
+（`backend/app/sampling.py`）。同名表在两个业务域各占一条登记，互不覆盖。
+
+- **可信身份**：业务域与维护人只从网关头读取
+  （`X-Trusted-Domain`、`X-Trusted-Principal`，可选 `X-Trusted-Grant`）。
+  请求体里的表名/业务域只描述目标，不能当读取凭据。
+- **旧配置**：`data_sample` 只存表名的配置仍可用；范围按可信域解析，
+  两个域分别只能看到自己的分区。
+- **排队与交付**：排队只记录身份与清单快照，不读分区；交付前重新读取清单，
+  只取「归属已确认 + 分区已核准」的行，排队后被撤回的分区不会读取。
+- **归属不明**：缺少可信上下文、域未确认或分区未核准时，返回核对依据
+  （`basis`），不返回任何样本行。
+- **可追溯**：每行交付都带 `domain / table / partition / source`
+  （`iceberg://<域>/<表>/<分区>/<行>`），可按请求查交付了哪几行。
+
+采样工作台接口（`/api/sampling/**`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/sampling/manifest` | 按可信域读归属清单（他域只给状态） |
+| GET | `/api/sampling/scope?table=` | 同名表在各业务域的可见范围 |
+| GET | `/api/sampling/legacy-scope?config_id=` | 旧采样配置的两域范围 |
+| POST | `/api/sampling/claims` | 登记归属与分区（新登记从待核对起步） |
+| POST | `/api/sampling/claims/{id}/confirm|reject` | 确认/驳回归属 |
+| POST | `/api/sampling/partitions/{id}/approve|revoke` | 核准/撤回分区 |
+| POST | `/api/sampling/requests` | 排队采样（旧配置动作也走这里） |
+| POST | `/api/sampling/requests/{id}/execute` | 执行并重新核对清单 |
+| GET | `/api/sampling/requests/{id}/delivery` | 查是否交付、交付了哪几行 |
+
+前端在「Iceberg表管理」和「数据采样」页底部提供采样工作台
+（`frontend/src/views/SamplingWorkbench.vue`）。
+
 领域：数据工程
 子方向：数仓与数据湖
